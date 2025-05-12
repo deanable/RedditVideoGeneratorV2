@@ -4,9 +4,8 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Configuration; // For IConfiguration
 using RedditVideoGenerator.Core.Models;   // For ApplicationSettings
 using RedditVideoGenerator.Core.Services; // For our service interfaces and implementations
-using RedditVideoGenerator.UI.ViewModels; // <<<< ADDED THIS USING DIRECTIVE
+using RedditVideoGenerator.UI.ViewModels;
 using System;
-// using System.IO; // ImplicitUsings might cover this, or add if needed
 using System.Windows;
 
 namespace RedditVideoGenerator.UI
@@ -16,7 +15,6 @@ namespace RedditVideoGenerator.UI
         private static IHost? _host;
 
         public static IHost Host => _host ??= CreateHostBuilder(null).Build();
-
         public static IServiceProvider Services => Host.Services;
 
         public static T GetService<T>() where T : class
@@ -24,43 +22,59 @@ namespace RedditVideoGenerator.UI
             return Services.GetRequiredService<T>();
         }
 
-        public App()
-        {
-            // Constructor
-        }
+        public App() { }
 
         protected override async void OnStartup(StartupEventArgs e)
         {
             var host = Host;
             await host.StartAsync();
 
-            var configService = GetService<IConfigurationService>();
-            var logger = GetService<ILoggerService>();
+            ILoggerService? logger = null; // Initialize logger to null
+            IConfigurationService? configService = null;
 
             try
             {
+                // Attempt to get logger first
+                logger = GetService<ILoggerService>();
+                configService = GetService<IConfigurationService>();
+
                 await configService.LoadSettingsAsync();
                 logger.LogInformation("Application settings loaded successfully via IConfigurationService.");
                 logger.LogInformation($"Default Subreddit from settings: {configService.Settings.DefaultSubreddit}");
             }
             catch (Exception ex)
             {
-                logger.LogCritical("Failed to load application settings during startup.", ex);
+                // Log if possible, then show MessageBox
+                logger?.LogCritical("Failed to load application settings during startup.", ex);
                 MessageBox.Show($"Critical Error: Failed to load application settings: {ex.Message}\nApplication will exit.", "Configuration Error", MessageBoxButton.OK, MessageBoxImage.Error);
                 Shutdown();
                 return;
             }
 
+            // Initialize RedditService after settings are loaded
             var redditService = GetService<IRedditService>();
             try
             {
-                await redditService.InitializeAsync();
+                await redditService.InitializeAsync(); // This might throw if Reddit auth fails
                 logger.LogInformation("RedditService initialized successfully.");
             }
-            catch (Exception ex)
+            catch (Exception ex) // Catch exceptions specifically from RedditService initialization
             {
                 logger.LogCritical("Failed to initialize RedditService during startup.", ex);
-                MessageBox.Show($"Critical Error: Failed to initialize RedditService: {ex.Message}\nCheck Reddit App ID and User Agent in appsettings.json.\nApplication will exit.", "Reddit Service Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                string detailedErrorMessage = $"Critical Error: Failed to initialize RedditService.\n\n";
+                detailedErrorMessage += $"Message: {ex.Message}\n\n";
+                if (ex.InnerException != null)
+                {
+                    detailedErrorMessage += $"Inner Exception: {ex.InnerException.Message}\n\n";
+                }
+                detailedErrorMessage += "This is often due to:\n";
+                detailedErrorMessage += "1. Incorrect 'RedditAppId' in appsettings.json.\n";
+                detailedErrorMessage += "2. Incorrect or missing 'RedditUserAgent' in appsettings.json.\n";
+                detailedErrorMessage += "3. Network connectivity issues to Reddit.\n";
+                detailedErrorMessage += "4. Reddit API temporary issues or rate limiting.\n\n";
+                detailedErrorMessage += "Please check your appsettings.json and internet connection.\nApplication will exit.";
+
+                MessageBox.Show(detailedErrorMessage, "Reddit Service Initialization Error", MessageBoxButton.OK, MessageBoxImage.Error);
                 Shutdown();
                 return;
             }
@@ -73,17 +87,26 @@ namespace RedditVideoGenerator.UI
 
         protected override async void OnExit(ExitEventArgs e)
         {
-            var configService = GetService<IConfigurationService>();
+            ILoggerService? logger = null;
+            IConfigurationService? configService = null;
+            try
+            {
+                // It's possible services can't be resolved if host is already shutting down
+                logger = GetService<ILoggerService>();
+                configService = GetService<IConfigurationService>();
+            }
+            catch { }
+
+
             if (configService != null)
             {
                 await configService.SaveSettingsAsync();
-                GetService<ILoggerService>()?.LogInformation("Application settings saved on exit.");
+                logger?.LogInformation("Application settings saved on exit.");
             }
             else
             {
-                try { GetService<ILoggerService>()?.LogWarning("ConfigurationService was null during OnExit, settings not saved.", null); } catch { }
+                logger?.LogWarning("ConfigurationService was null during OnExit, settings not saved.", null);
             }
-
 
             if (_host != null)
             {
@@ -111,10 +134,7 @@ namespace RedditVideoGenerator.UI
                     services.AddSingleton<MicrosoftTextToSpeechService>();
                     services.AddSingleton<ElevenLabsTextToSpeechService>();
                     services.AddSingleton<IRedditService, RedditApiService>();
-
-                    // Register MainViewModel
-                    services.AddTransient<MainViewModel>(); // <<<< ENSURE THIS LINE IS PRESENT AND CORRECT
-
+                    services.AddTransient<MainViewModel>();
                     services.AddSingleton<MainWindow>();
                 });
     }
