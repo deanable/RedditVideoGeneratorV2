@@ -1,88 +1,100 @@
 ﻿// RedditVideoGenerator.Core/Services/JsonConfigurationService.cs
-using Microsoft.Extensions.Configuration; // From NuGet package
+using Microsoft.Extensions.Options; // Required for IOptions
 using RedditVideoGenerator.Core.Models;
 using System;
 using System.IO;
-using System.Text.Json; // For JsonSerializer
+using System.Text.Json;
 using System.Threading.Tasks;
 
 namespace RedditVideoGenerator.Core.Services
 {
     public class JsonConfigurationService : IConfigurationService
     {
-        private const string SettingsFileName = "appsettings.json";
+        private readonly ILoggerService _logger;
         private readonly string _settingsFilePath;
+        private readonly IOptionsMonitor<ApplicationSettings> _settingsMonitor; // To get updated settings if appsettings.json changes
 
+        // Settings property will now primarily reflect what was loaded by the host.
+        // We might still want to update it if specific programmatic changes are made that need saving.
         public ApplicationSettings Settings { get; private set; }
 
-        public JsonConfigurationService()
+        public JsonConfigurationService(IOptionsMonitor<ApplicationSettings> settingsMonitor, ILoggerService logger)
         {
-            // Determine path for appsettings.json (usually alongside the executable or in AppData)
-            // For a library, it's often simpler to expect it in the application's base directory.
-            // For user-specific settings, a path in Environment.SpecialFolder.ApplicationData is better.
-            // We'll start with a simple approach: alongside the executable.
-            _settingsFilePath = Path.Combine(AppContext.BaseDirectory, SettingsFileName);
-            Settings = new ApplicationSettings(); // Initialize with defaults
+            _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+            _settingsMonitor = settingsMonitor ?? throw new ArgumentNullException(nameof(settingsMonitor));
+
+            // Get the initial settings loaded by the host
+            Settings = _settingsMonitor.CurrentValue;
+
+            // Define where the appsettings.json is located for saving.
+            // AppContext.BaseDirectory points to the execution directory (e.g., bin/Debug/net8.0-windows)
+            _settingsFilePath = Path.Combine(AppContext.BaseDirectory, "appsettings.json");
+
+            // Subscribe to changes if you want live updates (optional for this app's current scope)
+            // _settingsMonitor.OnChange(updatedSettings =>
+            // {
+            //     _logger.LogInformation("Application settings reloaded due to file change.");
+            //     Settings = updatedSettings;
+            // });
         }
 
-        public async Task LoadSettingsAsync()
+        public Task LoadSettingsAsync()
         {
-            try
+            // The host's configuration system (via services.Configure in App.xaml.cs)
+            // has already loaded appsettings.json into IOptions<ApplicationSettings>.
+            // We retrieve the current value from IOptionsMonitor in the constructor.
+            // This method can now be simpler, perhaps just ensuring Settings is not null
+            // or logging the loaded settings.
+
+            if (Settings == null)
             {
-                if (File.Exists(_settingsFilePath))
+                _logger.LogWarning("ApplicationSettings were null after initial load from IOptionsMonitor. This is unexpected.", null);
+                // Attempt to re-fetch or initialize defaults if absolutely necessary,
+                // but IOptions should provide an instance.
+                Settings = _settingsMonitor.CurrentValue ?? new ApplicationSettings();
+            }
+
+            // Ensure critical paths are initialized if they were somehow not set by the JSON binding
+            if (string.IsNullOrWhiteSpace(Settings.TemporaryFilesFolderPath))
+            {
+                Settings.TemporaryFilesFolderPath = Path.Combine(Path.GetTempPath(), "RedditVideoGeneratorV2_Temp");
+                _logger.LogInformation($"TemporaryFilesFolderPath was not set, defaulting to: {Settings.TemporaryFilesFolderPath}");
+            }
+            if (!Directory.Exists(Settings.TemporaryFilesFolderPath))
+            {
+                try
                 {
-                    // Using Microsoft.Extensions.Configuration for robust loading
-                    var configurationBuilder = new ConfigurationBuilder()
-                        .SetBasePath(AppContext.BaseDirectory) // Base path for the JSON file
-                        .AddJsonFile(SettingsFileName, optional: true, reloadOnChange: true);
-
-                    IConfigurationRoot configurationRoot = configurationBuilder.Build();
-
-                    // Bind the configuration to our ApplicationSettings object
-                    var loadedSettings = new ApplicationSettings();
-                    configurationRoot.Bind(loadedSettings); // This uses Microsoft.Extensions.Configuration.Binder
-                    Settings = loadedSettings;
-
-                    // Ensure critical paths are initialized if not in JSON
-                    if (string.IsNullOrWhiteSpace(Settings.TemporaryFilesFolderPath))
-                    {
-                        Settings.TemporaryFilesFolderPath = Path.Combine(Path.GetTempPath(), "RedditVideoGeneratorV2");
-                    }
+                    Directory.CreateDirectory(Settings.TemporaryFilesFolderPath);
                 }
-                else
+                catch (Exception ex)
                 {
-                    // Settings file doesn't exist, use defaults and perhaps save it for the first time.
-                    Console.WriteLine($"Warning: Configuration file '{_settingsFilePath}' not found. Using default settings. Will create on save.");
-                    // Ensure the default constructor of ApplicationSettings sets sensible values.
-                    await SaveSettingsAsync(); // Optionally save a default file
+                    _logger.LogError($"Could not create temporary files directory: {Settings.TemporaryFilesFolderPath}", ex);
                 }
             }
-            catch (Exception ex)
-            {
-                Console.Error.WriteLine($"Error loading settings from '{_settingsFilePath}': {ex.Message}");
-                // Fallback to default settings in case of error
-                Settings = new ApplicationSettings();
-            }
+
+
+            _logger.LogInformation("JsonConfigurationService: Settings initialized/verified.");
+            return Task.CompletedTask;
         }
 
         public async Task SaveSettingsAsync()
         {
             try
             {
-                // Ensure the directory exists
-                string? directory = Path.GetDirectoryName(_settingsFilePath);
-                if (!string.IsNullOrWhiteSpace(directory) && !Directory.Exists(directory))
-                {
-                    Directory.CreateDirectory(directory);
-                }
-
+                // We save the current state of the Settings object.
+                // This is useful if the application modifies settings programmatically at runtime
+                // and wants to persist them.
                 var options = new JsonSerializerOptions { WriteIndented = true };
-                string jsonString = JsonSerializer.Serialize(Settings, options);
+                // We need to wrap it in the "ApplicationSettings" key to match the JSON structure
+                var settingsWrapper = new { ApplicationSettings = Settings };
+                string jsonString = JsonSerializer.Serialize(settingsWrapper, options);
+
                 await File.WriteAllTextAsync(_settingsFilePath, jsonString);
+                _logger.LogInformation($"Settings saved to '{_settingsFilePath}'.");
             }
             catch (Exception ex)
             {
-                Console.Error.WriteLine($"Error saving settings to '{_settingsFilePath}': {ex.Message}");
+                _logger.LogError($"Error saving settings to '{_settingsFilePath}': {ex.Message}", ex);
             }
         }
     }

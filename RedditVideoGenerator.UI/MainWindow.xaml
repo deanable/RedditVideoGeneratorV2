@@ -1,12 +1,33 @@
 ﻿<Window x:Class="RedditVideoGenerator.UI.MainWindow"
-        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
-        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
-        xmlns:local="clr-namespace:RedditVideoGenerator.UI"
-        mc:Ignorable="d"
-        Title="MainWindow" Height="450" Width="800">
-    <Grid>
-        
+                xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+                xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+                xmlns:local="clr-namespace:RedditVideoGenerator.UI"
+                xmlns:viewModels="clr-namespace:RedditVideoGenerator.UI.ViewModels"
+                mc:Ignorable="d"
+                Title="Reddit Video Generator V2" Height="450" Width="800"
+                d:DataContext="{d:DesignInstance Type=viewModels:MainViewModel, IsDesignTimeCreatable=False}">
+    <Grid Margin="10">
+        <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
+            <TextBlock Text="Reddit Video Generator" FontSize="24" FontWeight="Bold" HorizontalAlignment="Center" Margin="0,0,0,20"/>
+
+            <Button Content="Fetch Top Post" 
+                            Command="{Binding FetchTopPostCommand}" 
+                            Width="200" Height="40" 
+                            Margin="0,0,0,10"/>
+
+            <TextBlock Text="Fetched Post Title:" FontWeight="SemiBold" Margin="0,10,0,5"/>
+            <TextBlock Text="{Binding FetchedPostTitle}" 
+                               TextWrapping="Wrap" 
+                               MinHeight="60" 
+                               Background="LightGray" 
+                               Padding="5"/>
+
+            <TextBlock Text="Status:" FontWeight="SemiBold" Margin="0,20,0,5"/>
+            <TextBlock Text="{Binding StatusMessage}" 
+                               TextWrapping="Wrap" />
+        </StackPanel>
     </Grid>
 </Window>
+        
