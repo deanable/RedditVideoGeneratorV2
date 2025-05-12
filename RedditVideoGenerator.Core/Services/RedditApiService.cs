@@ -4,11 +4,15 @@ using RedditVideoGenerator.Core.Services;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Net.Http; // Added for potential direct check, though Reddit.NET handles it
 using System.Threading.Tasks;
-using Reddit; // From Reddit.NET package
+using Reddit;
 using Reddit.Controllers;
 using Reddit.Things;
 using Reddit.Inputs;
+using Microsoft.VisualBasic.Logging;
+using System.Threading.Channels;
+using System.Windows.Forms;
 
 namespace RedditVideoGenerator.Core.Services
 {
@@ -29,37 +33,64 @@ namespace RedditVideoGenerator.Core.Services
         public Task InitializeAsync()
         {
             string? appId = _configurationService.Settings.RedditAppId;
-            string? appSecret = _configurationService.Settings.RedditAppSecret;
-            string? userAgent = _configurationService.Settings.RedditUserAgent ?? $"desktop:RedditVideoGeneratorV2:0.1 (by /u/YourRedditUsername)";
+            string? appSecret = _configurationService.Settings.RedditAppSecret; // Often blank for installed apps
+            string? userAgent = _configurationService.Settings.RedditUserAgent;
 
             if (string.IsNullOrWhiteSpace(appId))
             {
-                _logger.LogError("Reddit AppId is not configured. Cannot initialize RedditService.", null);
+                _logger.LogError("Reddit AppId is not configured in appsettings.json. Cannot initialize RedditService.", null);
                 return Task.CompletedTask;
             }
+            if (string.IsNullOrWhiteSpace(userAgent))
+            {
+                _logger.LogError("Reddit UserAgent is not configured in appsettings.json. Cannot initialize RedditService.", null);
+                // Provide a default or recommend setting it.
+                userAgent = $"desktop:RedditVideoGeneratorV2_UnknownUser:0.1"; // Fallback, but user should configure
+                _logger.LogWarning($"Using fallback UserAgent: {userAgent}. Please configure a proper UserAgent in appsettings.json.", null);
+            }
 
-            _logger.LogInformation("Initializing Reddit client...");
+            _logger.LogInformation($"Attempting to initialize Reddit client with AppId: '{appId}', UserAgent: '{userAgent}'");
             try
             {
-                string? refreshToken = null;
-                if (string.IsNullOrWhiteSpace(appSecret))
-                {
-                    refreshToken = Guid.NewGuid().ToString();
-                    _logger.LogInformation($"Using Userless (installed app type) with AppID and DeviceID (as RefreshToken): {refreshToken}");
-                }
-                else
-                {
-                    _logger.LogInformation("Using Userless (script/web app type) with AppID and AppSecret.");
-                }
+                // For "installed app" type (which is common for userless desktop apps),
+                // appSecret is often not used or is empty.
+                // Reddit.NET's constructor for userless auth primarily needs appId and userAgent.
+                // A refreshToken (like a deviceId) can be provided for some auth flows.
+                // The original project generated a GUID for device_id. Let's try that as refreshToken.
+                string refreshToken = Guid.NewGuid().ToString();
+                _logger.LogDebug($"Using generated RefreshToken (DeviceId): {refreshToken}");
 
-                _redditClient = new RedditClient(appId: appId, appSecret: appSecret, refreshToken: refreshToken, accessToken: null, userAgent: userAgent);
+                // Note: For Reddit.NET 1.5.2, the constructor order might be:
+                // appId, refreshToken, accessToken, appSecret, userAgent, deviceId (optional, separate from refreshToken)
+                // Or, for simple userless app-only: appId, appSecret (can be null/empty), userAgent
+                // Let's try the constructor that seems most appropriate for userless installed app.
+                // The library should handle fetching the initial token.
+                _redditClient = new RedditClient(
+                    appId: appId,
+                    appSecret: appSecret, // Pass it, even if empty/null for installed app type
+                    refreshToken: refreshToken, // Using a GUID as a device_id/refreshToken
+                    userAgent: userAgent
+                    // accessToken: null // Library will fetch this
+                    );
 
-                _logger.LogInformation("Reddit client initialized successfully.");
+                // A quick test to see if the client is functional (optional, but good for diagnostics)
+                // This might throw if authentication failed silently in constructor.
+                var me = _redditClient.Account?.Me; // This forces an authenticated call if not done already.
+                _logger.LogInformation(me != null ? $"Reddit client initialized. User: {me.Name}" : "Reddit client initialized (userless or anonymous).");
+
             }
             catch (Exception ex)
             {
-                _logger.LogError($"Failed to initialize Reddit client: {ex.Message}", ex);
+                _logger.LogCritical($"CRITICAL: Failed to initialize RedditClient. This is often due to incorrect AppId/UserAgent in appsettings.json, network issues, or Reddit API problems. Exception: {ex.Message}", ex);
+                // Log the full exception details, including any inner exceptions if present.
+                if (ex.InnerException != null)
+                {
+                    _logger.LogError($"Inner Exception: {ex.InnerException.Message}", ex.InnerException);
+                }
                 _redditClient = null;
+                // Optionally, rethrow or handle this as a critical startup failure.
+                // For now, OnStartup in App.xaml.cs will catch this and show a MessageBox.
+                throw; // Rethrow to be caught by App.xaml.cs OnStartup
             }
             return Task.CompletedTask;
         }
@@ -93,7 +124,19 @@ namespace RedditVideoGenerator.Core.Services
             }
             catch (Exception ex)
             {
-                _logger.LogError($"Error fetching post '{postIdOrUrl}': {ex.Message}", ex);
+                // Check if the exception is from Newtonsoft.Json and log the response if possible
+                if (ex.Source == "Newtonsoft.Json" && ex is Newtonsoft.Json.JsonReaderException jre)
+                {
+                    _logger.LogError($"JSON Parsing Error fetching post '{postIdOrUrl}': {jre.Message}. Possible HTML response instead of JSON.", jre);
+                }
+                else if (ex.InnerException is Newtonsoft.Json.JsonReaderException innerJre) // RestSharp might wrap it
+                {
+                    _logger.LogError($"JSON Parsing Error (Inner) fetching post '{postIdOrUrl}': {innerJre.Message}. Possible HTML response instead of JSON.", innerJre);
+                }
+                else
+                {
+                    _logger.LogError($"Error fetching post '{postIdOrUrl}': {ex.Message}", ex);
+                }
                 return null;
             }
         }
@@ -177,7 +220,7 @@ namespace RedditVideoGenerator.Core.Services
                 return commentControllers?
                            .Select(MapRedditCommentToCommentInfo)
                            .Where(c => c != null)
-                           .Select(c => c!) // Null-forgiving operator
+                           .Select(c => c!)
                            .ToList()
                        ?? new List<RedditCommentInfo>();
             }
@@ -198,12 +241,7 @@ namespace RedditVideoGenerator.Core.Services
 
         private RedditPostInfo? MapRedditPostToPostInfo(Reddit.Controllers.Post postController)
         {
-            if (postController == null)
-            {
-                _logger.LogWarning("MapRedditPostToPostInfo received a null postController.", null);
-                return null;
-            }
-
+            if (postController == null) return null;
             var listingData = postController.Listing;
             if (listingData == null)
             {
@@ -214,7 +252,6 @@ namespace RedditVideoGenerator.Core.Services
             string selfTextContent = string.Empty;
             if (listingData.IsSelf)
             {
-                // For Reddit.Things.Post, properties are SelfText and SelfTextHTML
                 selfTextContent = listingData.SelfText ?? string.Empty;
                 if (string.IsNullOrWhiteSpace(selfTextContent) && !string.IsNullOrWhiteSpace(listingData.SelfTextHTML))
                 {
@@ -231,7 +268,7 @@ namespace RedditVideoGenerator.Core.Services
                 Score = postController.Score,
                 CommentCount = listingData.NumComments,
                 IsNsfw = listingData.Over18,
-                CreatedUtc = listingData.CreatedUTC, // From Reddit.Things.Post
+                CreatedUtc = listingData.CreatedUTC,
                 Url = "https://www.reddit.com" + listingData.Permalink,
                 SelfText = selfTextContent,
                 PlatinumAwards = postController.Awards?.Platinum ?? 0,
@@ -242,32 +279,21 @@ namespace RedditVideoGenerator.Core.Services
 
         private RedditCommentInfo? MapRedditCommentToCommentInfo(Reddit.Controllers.Comment commentController)
         {
-            if (commentController == null)
-            {
-                _logger.LogWarning("MapRedditCommentToCommentInfo received a null commentController.", null);
-                return null;
-            }
-
-            var listingData = commentController.Listing; // This is Reddit.Things.Comment
+            if (commentController == null) return null;
+            var listingData = commentController.Listing;
             if (listingData == null)
             {
                 _logger.LogWarning($"Comment listing data was null for comment ID {commentController.Id}. Cannot map comment.", null);
                 return null;
             }
 
-            int platinum = 0;
-            int gold = 0;
-            int silver = 0;
-
-            // Corrected: Access Gildings as a Dictionary<string, int> based on compiler errors
+            int platinum = 0, gold = 0, silver = 0;
             if (listingData.Gildings is Dictionary<string, int> gildingsDictionary)
             {
                 gildingsDictionary.TryGetValue("gid_3", out platinum);
                 gildingsDictionary.TryGetValue("gid_2", out gold);
                 gildingsDictionary.TryGetValue("gid_1", out silver);
             }
-            // Removed the fallback 'else if (listingData.Gildings != null)' that attempted property access,
-            // as the compiler error strongly indicates it's a Dictionary.
 
             var commentInfo = new RedditCommentInfo
             {
@@ -276,7 +302,7 @@ namespace RedditVideoGenerator.Core.Services
                 Body = listingData.Body,
                 BodyHtml = listingData.BodyHTML,
                 Score = listingData.Score,
-                CreatedUtc = listingData.CreatedUTC, // From Reddit.Things.Comment
+                CreatedUtc = listingData.CreatedUTC,
                 IsSubmitter = listingData.IsSubmitter,
                 PlatinumAwards = platinum,
                 GoldAwards = gold,
@@ -284,29 +310,17 @@ namespace RedditVideoGenerator.Core.Services
                 Replies = new List<RedditCommentInfo>()
             };
 
-            // Corrected: Based on CS0029, commentController.Replies is the List<Reddit.Controllers.Comment>
-            // This directly interprets the compiler error:
-            // "Cannot implicitly convert type 'List<Reddit.Controllers.Comment>' to 'Reddit.Things.CommentContainer'"
-            // implies commentController.Replies IS ALREADY List<Reddit.Controllers.Comment>.
-            if (commentController.Replies is List<Reddit.Controllers.Comment> actualReplyControllers && actualReplyControllers.Count > 0)
+            if (commentController.Replies is List<Reddit.Controllers.Comment> actualReplyControllers && actualReplyControllers.Any())
             {
-                foreach (Reddit.Controllers.Comment replyController in actualReplyControllers)
+                foreach (var replyController in actualReplyControllers)
                 {
                     if (replyController != null)
                     {
-                        RedditCommentInfo? mappedReply = MapRedditCommentToCommentInfo(replyController);
-                        if (mappedReply != null)
-                        {
-                            commentInfo.Replies.Add(mappedReply);
-                        }
+                        var mappedReply = MapRedditCommentToCommentInfo(replyController);
+                        if (mappedReply != null) commentInfo.Replies.Add(mappedReply);
                     }
                 }
             }
-            else if (commentController.Replies != null) // Log if it's not null but also not List<Comment>
-            {
-                _logger.LogWarning($"Comment {commentController.Id}: Replies object was not null but not directly a List<Comment>. Type: {commentController.Replies.GetType()}. Documentation suggests it should be CommentContainer with a .Comments list.", null);
-            }
-
             return commentInfo;
         }
     }
