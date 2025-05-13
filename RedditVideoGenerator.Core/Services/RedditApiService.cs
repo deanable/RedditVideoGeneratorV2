@@ -33,65 +33,31 @@ namespace RedditVideoGenerator.Core.Services
         public Task InitializeAsync()
         {
             string? appId = _configurationService.Settings.RedditAppId;
-            string? appSecret = _configurationService.Settings.RedditAppSecret; // Often blank for installed apps
+            string? appSecret = _configurationService.Settings.RedditAppSecret;
             string? userAgent = _configurationService.Settings.RedditUserAgent;
+            string? username = _configurationService.Settings.RedditUsername;
+            string? password = _configurationService.Settings.RedditPassword;
 
-            if (string.IsNullOrWhiteSpace(appId))
+            if (string.IsNullOrWhiteSpace(appId) || string.IsNullOrWhiteSpace(appSecret) ||
+                string.IsNullOrWhiteSpace(userAgent) || string.IsNullOrWhiteSpace(username) ||
+                string.IsNullOrWhiteSpace(password))
             {
-                _logger.LogError("Reddit AppId is not configured in appsettings.json. Cannot initialize RedditService.", null);
+                _logger.LogError("Reddit credentials are not fully configured. Please check appsettings.json.");
                 return Task.CompletedTask;
             }
-            if (string.IsNullOrWhiteSpace(userAgent))
-            {
-                _logger.LogError("Reddit UserAgent is not configured in appsettings.json. Cannot initialize RedditService.", null);
-                // Provide a default or recommend setting it.
-                userAgent = $"desktop:RedditVideoGeneratorV2_UnknownUser:0.1"; // Fallback, but user should configure
-                _logger.LogWarning($"Using fallback UserAgent: {userAgent}. Please configure a proper UserAgent in appsettings.json.", null);
-            }
 
-            _logger.LogInformation($"Attempting to initialize Reddit client with AppId: '{appId}', UserAgent: '{userAgent}'");
+            _logger.LogInformation($"Initializing RedditClient with user '{username}'.");
+
             try
             {
-                // For "installed app" type (which is common for userless desktop apps),
-                // appSecret is often not used or is empty.
-                // Reddit.NET's constructor for userless auth primarily needs appId and userAgent.
-                // A refreshToken (like a deviceId) can be provided for some auth flows.
-                // The original project generated a GUID for device_id. Let's try that as refreshToken.
-                string refreshToken = Guid.NewGuid().ToString();
-                _logger.LogDebug($"Using generated RefreshToken (DeviceId): {refreshToken}");
-
-                // Note: For Reddit.NET 1.5.2, the constructor order might be:
-                // appId, refreshToken, accessToken, appSecret, userAgent, deviceId (optional, separate from refreshToken)
-                // Or, for simple userless app-only: appId, appSecret (can be null/empty), userAgent
-                // Let's try the constructor that seems most appropriate for userless installed app.
-                // The library should handle fetching the initial token.
-                _redditClient = new RedditClient(
-                    appId: appId,
-                    appSecret: appSecret, // Pass it, even if empty/null for installed app type
-                    refreshToken: refreshToken, // Using a GUID as a device_id/refreshToken
-                    userAgent: userAgent
-                    // accessToken: null // Library will fetch this
-                    );
-
-                // A quick test to see if the client is functional (optional, but good for diagnostics)
-                // This might throw if authentication failed silently in constructor.
-                var me = _redditClient.Account?.Me; // This forces an authenticated call if not done already.
-                _logger.LogInformation(me != null ? $"Reddit client initialized. User: {me.Name}" : "Reddit client initialized (userless or anonymous).");
-
+                _redditClient = new RedditClient(appId, appSecret, username, password, userAgent);
+                _logger.LogInformation("RedditClient initialized successfully.");
             }
             catch (Exception ex)
             {
-                _logger.LogCritical($"CRITICAL: Failed to initialize RedditClient. This is often due to incorrect AppId/UserAgent in appsettings.json, network issues, or Reddit API problems. Exception: {ex.Message}", ex);
-                // Log the full exception details, including any inner exceptions if present.
-                if (ex.InnerException != null)
-                {
-                    _logger.LogError($"Inner Exception: {ex.InnerException.Message}", ex.InnerException);
-                }
-                _redditClient = null;
-                // Optionally, rethrow or handle this as a critical startup failure.
-                // For now, OnStartup in App.xaml.cs will catch this and show a MessageBox.
-                throw; // Rethrow to be caught by App.xaml.cs OnStartup
+                _logger.LogError("Failed to initialize RedditClient.", ex);
             }
+
             return Task.CompletedTask;
         }
 

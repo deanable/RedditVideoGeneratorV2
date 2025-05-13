@@ -8,6 +8,8 @@ namespace RedditVideoGenerator.Core.Models
         public string? RedditAppId { get; set; }
         public string? RedditAppSecret { get; set; } // Be cautious with storing secrets
         public string? RedditUserAgent { get; set; }
+        public string? RedditUsername { get; set; }
+        public string? RedditPassword { get; set; } // Be cautious with storing secrets
 
         // For ElevenLabs API
         public string? ElevenLabsApiKey { get; set; }
